@@ -1,0 +1,7 @@
+{
+  "name": "slack",
+  "description": "Slack channel for Claude Code — receive DMs and @mentions, reply in threads. Manage access via /slack:access.",
+  "author": { "name": "Justin" },
+  "version": "0.0.1",
+  "keywords": ["slack", "channel", "messaging"]
+}
