@@ -351,6 +351,7 @@ async function main() {
     const displayName = await getDisplayName(userId);
     const attachmentMeta = files ? formatAttachmentMeta(files) : "";
 
+    log(`NOTIFY: user=${displayName} channel=${channelId} text="${text.slice(0, 80)}"`);
     await mcp.notification({
       method: "notifications/claude/channel",
       params: {
@@ -363,6 +364,7 @@ async function main() {
         },
       },
     });
+    log(`NOTIFY sent successfully`);
 
     // Ack reaction
     if (access.delivery.ackReaction && app) {

@@ -23,22 +23,38 @@ say "slack-claude-channel setup"
 echo
 
 # ── Step 1: Check for bun ────────────────────────────────────────────
+BUN=""
 if command -v bun &>/dev/null; then
-  ok "bun $(bun --version)"
+  BUN="$(command -v bun)"
+elif [ -x "$HOME/.bun/bin/bun" ]; then
+  BUN="$HOME/.bun/bin/bun"
 else
-  warn "bun not found — installing via npm..."
-  if command -v npm &>/dev/null; then
-    npm install -g bun
-    ok "bun installed"
+  # Check mise installs
+  for d in "$HOME"/.local/share/mise/installs/bun/*/bin/bun; do
+    if [ -x "$d" ]; then
+      BUN="$d"
+      break
+    fi
+  done
+fi
+
+if [ -n "$BUN" ]; then
+  ok "bun found: $BUN ($("$BUN" --version))"
+else
+  say "Installing bun..."
+  curl -fsSL https://bun.sh/install | bash
+  BUN="$HOME/.bun/bin/bun"
+  if [ -x "$BUN" ]; then
+    ok "bun installed: $BUN"
   else
-    err "Neither bun nor npm found. Install bun: https://bun.sh"
+    err "Failed to install bun. Install manually: https://bun.sh"
     exit 1
   fi
 fi
 
 # ── Step 2: Install dependencies ─────────────────────────────────────
 say "Installing dependencies..."
-bun install --no-summary
+"$BUN" install --no-summary
 ok "Dependencies installed"
 echo
 
@@ -83,6 +99,7 @@ echo
 # ── Step 4: Collect tokens ───────────────────────────────────────────
 STATE_DIR="$HOME/.claude/channels/slack"
 ENV_FILE="$STATE_DIR/.env"
+SKIP_TOKENS=""
 
 # Check if already configured
 if [ -f "$ENV_FILE" ]; then
@@ -91,15 +108,11 @@ if [ -f "$ENV_FILE" ]; then
   read -rp "Overwrite? [y/N] " overwrite
   if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
     ok "Keeping existing tokens"
-    echo
-    # Skip to plugin install
-    BOT_TOKEN=""
-    APP_TOKEN=""
     SKIP_TOKENS=true
   fi
 fi
 
-if [ "${SKIP_TOKENS:-}" != "true" ]; then
+if [ -z "$SKIP_TOKENS" ]; then
   while true; do
     read -rp "Bot token (xoxb-...): " BOT_TOKEN
     if [[ "$BOT_TOKEN" == xoxb-* ]]; then
@@ -127,23 +140,11 @@ fi
 
 echo
 
-# ── Step 5: Install plugin ───────────────────────────────────────────
-say "Step 3: Install plugin"
-
-if command -v claude &>/dev/null; then
-  claude plugin add "$SCRIPT_DIR" 2>/dev/null && ok "Plugin installed" || warn "Plugin install failed — you can add it manually: claude plugin add $SCRIPT_DIR"
-else
-  warn "claude CLI not found in PATH"
-  echo "Run manually: claude plugin add $SCRIPT_DIR"
-fi
-
-echo
-
 # ── Done ──────────────────────────────────────────────────────────────
 say "Done! Next steps:"
 echo
-echo "  1. Start Claude with channels:"
-dim "     claude --channels"
+echo "  1. Start Claude with the Slack channel:"
+dim "     claude --plugin-dir $SCRIPT_DIR --dangerously-load-development-channels server:slack"
 echo
 echo "  2. DM your bot in Slack to get a pairing code"
 echo

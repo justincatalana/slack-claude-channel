@@ -14,14 +14,13 @@ cd slack-claude-channel
 
 The setup script will:
 1. Install bun (if needed) and dependencies
-2. Open your browser to create a pre-configured Slack app (all scopes/events/Socket Mode set automatically)
+2. Open your browser to create a pre-configured Slack app (all scopes/events/Socket Mode set automatically via app manifest)
 3. Prompt for your two tokens and save them
-4. Install the plugin into Claude Code
 
-Then:
+Then launch Claude with the Slack channel:
 
 ```bash
-claude --channels
+claude --plugin-dir /path/to/slack-claude-channel --dangerously-load-development-channels server:slack
 ```
 
 DM the bot in Slack → get a pairing code → `/slack:access pair <code>` → done.
@@ -40,11 +39,10 @@ Then grab your two tokens:
 1. **App-Level Token**: Basic Information → App-Level Tokens → **Generate Token** with `connections:write` scope → save the `xapp-*` token
 2. **Bot Token**: Install App → Install to Workspace → save the `xoxb-*` token
 
-### 2. Install
+### 2. Install Dependencies
 
 ```bash
 bun install
-claude plugin add /path/to/slack-claude-channel
 ```
 
 ### 3. Configure Tokens
@@ -53,10 +51,17 @@ claude plugin add /path/to/slack-claude-channel
 /slack:configure xoxb-your-bot-token xapp-your-app-token
 ```
 
+Or create `~/.claude/channels/slack/.env` directly:
+
+```
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_APP_TOKEN=xapp-your-app-token
+```
+
 ### 4. Launch
 
 ```bash
-claude --channels
+claude --plugin-dir /path/to/slack-claude-channel --dangerously-load-development-channels server:slack
 ```
 
 ### 5. Pair
@@ -81,6 +86,22 @@ Channels are opt-in:
 ### Access Control
 
 See [ACCESS.md](ACCESS.md) for full details on pairing, allowlists, and policies.
+
+## Troubleshooting
+
+### Server doesn't connect to Slack
+- Verify tokens: `cat ~/.claude/channels/slack/.env`
+- Test standalone: `bun server.ts` — you should see "MCP server connected" then "Slack Bolt connected via Socket Mode"
+- If you see `invalid_auth`, regenerate your tokens in the Slack app dashboard
+
+### Messages not reaching Claude
+- Make sure you're using `--dangerously-load-development-channels server:slack` (not just `--channels`)
+- Check that your user is in the allowlist: `cat ~/.claude/channels/slack/access.json`
+- Run `/slack:access` in Claude to see current access state
+
+### bun not found
+- The `run.sh` launcher searches PATH, mise installs, and `~/.bun/bin/` automatically
+- Install bun: `curl -fsSL https://bun.sh/install | bash`
 
 ## Optional: Search
 
