@@ -63,17 +63,25 @@ const stderrLogger = {
 
 // ── Instructions ─────────────────────────────────────────────────────
 
-const INSTRUCTIONS = `Messages from Slack arrive as <channel source="slack" user_id="U..." user_name="..." channel_id="C..." thread_ts="...">.
+const INSTRUCTIONS = `Messages from Slack arrive as <channel source="slack" user_id="U..." user_name="..." channel_id="C..." thread_ts="..." pending_ts="...">.
 
-To respond, use the reply tool with channel_id and thread_ts from the tag. Replies go in threads by default. Your markdown is auto-converted to Slack formatting. You can attach files by passing absolute paths in the files array.
+IMPORTANT WORKFLOW — every inbound message has a pending placeholder (the "thinking" message). You MUST:
+1. Use edit_message with channel_id and pending_ts to replace the placeholder with your actual reply. This gives the user instant feedback that you're working.
+2. If your reply is long, edit the placeholder first with a short summary, then use reply for additional detail in the thread.
 
-To acknowledge without a full reply, use the react tool (e.g., emoji "eyes" or "white_check_mark").
+If the message arrived in a thread, prior thread messages are included in the notification for context.
 
-To update a previous reply (e.g., "looking into it..." → final answer), use edit_message with the message timestamp returned by reply.
+To acknowledge without a full reply, use the react tool (e.g., emoji "white_check_mark").
 
 To pull context, use fetch_messages to read channel history or thread replies, list_channels to see available channels, or download_attachment to retrieve files shared in Slack.
 
+When you read or write a file as part of your work, use share_snippet to post a preview to Slack so the user can see what you're looking at or what changed.
+
 Attachments on inbound messages are NOT auto-downloaded. If a message includes attachments, their metadata (file_id, name, size) appears in the notification. Call download_attachment explicitly if you need the file contents.
+
+When you finish your work, react to the original message (using thread_ts as the timestamp) with "white_check_mark" to signal completion.
+
+If someone sends "status", reply with what you're currently working on, your working directory, and a brief summary of recent activity.
 
 You have full access to your normal tools (file read/write, bash, etc.) — you're a coding assistant reachable via Slack.`;
 
@@ -113,7 +121,7 @@ const TOOLS = [
         timestamp: { type: "string", description: "Message timestamp" },
         emoji: {
           type: "string",
-          description: "Emoji name without colons (e.g., 'eyes')",
+          description: "Emoji name without colons (e.g., 'eyes', 'white_check_mark')",
         },
       },
       required: ["channel_id", "timestamp", "emoji"],
@@ -121,14 +129,15 @@ const TOOLS = [
   },
   {
     name: "edit_message",
-    description: "Update a previously sent bot message.",
+    description:
+      "Update a previously sent bot message. Use this to replace the 'thinking' placeholder with your actual reply.",
     inputSchema: {
       type: "object" as const,
       properties: {
         channel_id: { type: "string", description: "Slack channel ID" },
         timestamp: {
           type: "string",
-          description: "Timestamp of the message to edit",
+          description: "Timestamp of the message to edit (use pending_ts from the notification)",
         },
         text: { type: "string", description: "New message text (markdown)" },
       },
@@ -178,6 +187,31 @@ const TOOLS = [
           description: "Max channels to return (default 100)",
         },
       },
+    },
+  },
+  {
+    name: "share_snippet",
+    description:
+      "Share a code or text snippet to Slack. Use this to show the user file contents or changes you've made.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        channel_id: { type: "string", description: "Slack channel ID" },
+        thread_ts: {
+          type: "string",
+          description: "Thread timestamp to post in",
+        },
+        content: { type: "string", description: "The code or text content" },
+        filename: {
+          type: "string",
+          description: "Filename for syntax highlighting (e.g., 'diff.patch', 'app.ts')",
+        },
+        title: {
+          type: "string",
+          description: "Title shown above the snippet (e.g., 'Changes to server.ts')",
+        },
+      },
+      required: ["channel_id", "content", "filename"],
     },
   },
   {
@@ -255,8 +289,6 @@ function formatSize(bytes: number): string {
 }
 
 // ── Permission verdict regex ─────────────────────────────────────────
-// Matches "y abcde", "yes abcde", "n abcde", "no abcde"
-// [a-km-z] is the ID alphabet Claude Code uses (lowercase, skips 'l')
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i;
 
 // ── Main ─────────────────────────────────────────────────────────────
@@ -274,7 +306,7 @@ async function main() {
   // ── MCP Server ───────────────────────────────────────────────────
 
   const mcp = new Server(
-    { name: "slack", version: "0.0.1" },
+    { name: "slack", version: "0.0.2" },
     {
       capabilities: {
         experimental: {
@@ -353,12 +385,47 @@ async function main() {
           channel: lastDmChannelId,
           text: prompt,
         });
-        log(`Permission prompt sent to ${lastDmChannelId}: ${params.request_id}`);
+        log(
+          `Permission prompt sent to ${lastDmChannelId}: ${params.request_id}`,
+        );
       } catch (err) {
         log("Failed to send permission prompt:", err);
       }
     },
   );
+
+  // ── Thread context helper ──────────────────────────────────────────
+
+  async function fetchThreadContext(
+    channelId: string,
+    threadTs: string,
+    currentTs: string,
+  ): Promise<string> {
+    if (!app) return "";
+    try {
+      const result = await app.client.conversations.replies({
+        channel: channelId,
+        ts: threadTs,
+        limit: 20,
+      });
+      const messages = (result.messages || []).filter(
+        (m: any) => m.ts !== currentTs,
+      );
+      if (messages.length === 0) return "";
+
+      const lines = await Promise.all(
+        messages.map(async (m: any) => {
+          const name = m.bot_id
+            ? "Claude"
+            : await getDisplayName(m.user || "unknown");
+          return `[${name}]: ${m.text || "(no text)"}`;
+        }),
+      );
+      return "\n\n--- Thread context ---\n" + lines.join("\n");
+    } catch {
+      return "";
+    }
+  }
 
   // ── Event handlers ───────────────────────────────────────────────
 
@@ -409,7 +476,6 @@ async function main() {
       });
       log(`Permission verdict: ${m[1]} ${m[2]}`);
 
-      // Ack with a reaction
       if (app) {
         try {
           await app.client.reactions.add({
@@ -424,34 +490,75 @@ async function main() {
       return;
     }
 
-    // Allowed — emit notification
+    // ── Feature: Status reactions — add 👀 on receipt ──────────────
+    if (app) {
+      try {
+        await app.client.reactions.add({
+          channel: channelId,
+          timestamp: messageTs,
+          name: "eyes",
+        });
+      } catch {}
+    }
+
+    // ── Feature: Typing indicator — post placeholder ───────────────
+    let pendingTs: string | undefined;
+    if (app) {
+      try {
+        const pending = await app.client.chat.postMessage({
+          channel: channelId,
+          thread_ts: threadTs || messageTs,
+          text: "_Thinking..._",
+        });
+        pendingTs = pending.ts || undefined;
+      } catch {}
+    }
+
+    // ── Feature: Thread context — include prior messages ───────────
+    let threadContext = "";
+    if (threadTs && threadTs !== messageTs) {
+      threadContext = await fetchThreadContext(channelId, threadTs, messageTs);
+    }
+
+    // Build notification
     const displayName = await getDisplayName(userId);
     const attachmentMeta = files ? formatAttachmentMeta(files) : "";
 
     log(
       `NOTIFY: user=${displayName} channel=${channelId} text="${text.slice(0, 80)}"`,
     );
+
+    const meta: Record<string, string> = {
+      user_id: userId,
+      user_name: displayName,
+      channel_id: channelId,
+      thread_ts: threadTs || messageTs,
+    };
+    if (pendingTs) {
+      meta.pending_ts = pendingTs;
+    }
+
     await mcp.notification({
       method: "notifications/claude/channel",
       params: {
-        content: text + attachmentMeta,
-        meta: {
-          user_id: userId,
-          user_name: displayName,
-          channel_id: channelId,
-          thread_ts: threadTs || messageTs,
-        },
+        content: text + attachmentMeta + threadContext,
+        meta,
       },
     });
     log("NOTIFY sent successfully");
 
-    // Ack reaction
-    if (access.delivery.ackReaction && app) {
+    // ── Feature: Status reactions — swap 👀 for ⏳ ─────────────────
+    if (app) {
       try {
+        await app.client.reactions.remove({
+          channel: channelId,
+          timestamp: messageTs,
+          name: "eyes",
+        });
         await app.client.reactions.add({
           channel: channelId,
           timestamp: messageTs,
-          name: access.delivery.ackReaction,
+          name: "hourglass_flowing_sand",
         });
       } catch {}
     }
@@ -546,6 +653,8 @@ async function main() {
           return await toolDownloadAttachment(args);
         case "list_channels":
           return await toolListChannels(args);
+        case "share_snippet":
+          return await toolShareSnippet(args);
         case "search_messages":
           return await toolSearchMessages(args);
         default:
@@ -641,6 +750,22 @@ async function main() {
       timestamp,
       name: emoji,
     });
+
+    // If reacting with completion emoji, remove hourglass
+    if (
+      emoji === "white_check_mark" ||
+      emoji === "heavy_check_mark" ||
+      emoji === "done"
+    ) {
+      try {
+        await app!.client.reactions.remove({
+          channel: channel_id,
+          timestamp,
+          name: "hourglass_flowing_sand",
+        });
+      } catch {}
+    }
+
     return {
       content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
     };
@@ -756,6 +881,30 @@ async function main() {
     return {
       content: [
         { type: "text" as const, text: JSON.stringify(channels, null, 2) },
+      ],
+    };
+  }
+
+  async function toolShareSnippet(args: any) {
+    const { channel_id, thread_ts, content, filename, title } = args;
+
+    assertSendable(filename);
+
+    const fileBuffer = Buffer.from(content, "utf-8");
+    await app!.client.files.uploadV2({
+      channel_id,
+      thread_ts,
+      file: fileBuffer,
+      filename: filename,
+      title: title || filename,
+    });
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({ ok: true, filename, size: fileBuffer.length }),
+        },
       ],
     };
   }
