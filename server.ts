@@ -304,7 +304,7 @@ async function main() {
   // ── MCP Server ───────────────────────────────────────────────────
 
   const mcp = new Server(
-    { name: "slack", version: "0.0.2" },
+    { name: "villager", version: "0.0.2" },
     {
       capabilities: {
         experimental: {
