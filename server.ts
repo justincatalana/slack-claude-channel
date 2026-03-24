@@ -8,6 +8,7 @@ import { App, LogLevel } from "@slack/bolt";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
+import { z } from "zod";
 import {
   loadAccess,
   saveAccess,
@@ -15,11 +16,9 @@ import {
   generatePairingCode,
   addPending,
   pollApprovals,
-  writeApproval,
   assertSendable,
   getStateDir,
   getInboxDir,
-  type AccessState,
 } from "./access.js";
 import { toMrkdwn } from "./mrkdwn.js";
 
@@ -50,7 +49,6 @@ function log(...args: unknown[]) {
   console.error("[slack-channel]", ...args);
 }
 
-// Custom logger for Bolt that writes to stderr
 const stderrLogger = {
   debug: (...args: unknown[]) => {
     if (process.env.DEBUG) console.error("[bolt:debug]", ...args);
@@ -220,7 +218,6 @@ function chunkText(
 
     let splitAt = limit;
     if (mode === "newline") {
-      // Find last newline before limit
       const lastNl = remaining.lastIndexOf("\n", limit);
       if (lastNl > limit * 0.3) splitAt = lastNl + 1;
     }
@@ -257,6 +254,11 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
+// ── Permission verdict regex ─────────────────────────────────────────
+// Matches "y abcde", "yes abcde", "n abcde", "no abcde"
+// [a-km-z] is the ID alphabet Claude Code uses (lowercase, skips 'l')
+const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i;
+
 // ── Main ─────────────────────────────────────────────────────────────
 
 async function main() {
@@ -275,7 +277,10 @@ async function main() {
     { name: "slack", version: "0.0.1" },
     {
       capabilities: {
-        experimental: { "claude/channel": {} },
+        experimental: {
+          "claude/channel": {},
+          "claude/channel/permission": {},
+        },
         tools: {},
       },
       instructions: INSTRUCTIONS,
@@ -315,6 +320,46 @@ async function main() {
     }
   }
 
+  // Track the most recent DM channel for permission relay
+  let lastDmChannelId: string | null = null;
+
+  // ── Permission relay ───────────────────────────────────────────────
+
+  const PermissionRequestSchema = z.object({
+    method: z.literal("notifications/claude/channel/permission_request"),
+    params: z.object({
+      request_id: z.string(),
+      tool_name: z.string(),
+      description: z.string(),
+      input_preview: z.string(),
+    }),
+  });
+
+  mcp.setNotificationHandler(
+    PermissionRequestSchema,
+    async ({ params }) => {
+      if (!app || !lastDmChannelId) {
+        log("Permission request received but no DM channel available");
+        return;
+      }
+
+      const prompt =
+        `*Permission request:* Claude wants to run \`${params.tool_name}\`\n` +
+        `> ${params.description}\n\n` +
+        `Reply \`yes ${params.request_id}\` or \`no ${params.request_id}\``;
+
+      try {
+        await app.client.chat.postMessage({
+          channel: lastDmChannelId,
+          text: prompt,
+        });
+        log(`Permission prompt sent to ${lastDmChannelId}: ${params.request_id}`);
+      } catch (err) {
+        log("Failed to send permission prompt:", err);
+      }
+    },
+  );
+
   // ── Event handlers ───────────────────────────────────────────────
 
   async function handleMessage(
@@ -347,11 +392,45 @@ async function main() {
       return;
     }
 
-    // allowed — emit notification
+    // Track DM channel for permission relay
+    if (isDm) {
+      lastDmChannelId = channelId;
+    }
+
+    // Check for permission verdict before forwarding as chat
+    const m = PERMISSION_REPLY_RE.exec(text);
+    if (m) {
+      await mcp.notification({
+        method: "notifications/claude/channel/permission",
+        params: {
+          request_id: m[2].toLowerCase(),
+          behavior: m[1].toLowerCase().startsWith("y") ? "allow" : "deny",
+        },
+      });
+      log(`Permission verdict: ${m[1]} ${m[2]}`);
+
+      // Ack with a reaction
+      if (app) {
+        try {
+          await app.client.reactions.add({
+            channel: channelId,
+            timestamp: messageTs,
+            name: m[1].toLowerCase().startsWith("y")
+              ? "white_check_mark"
+              : "x",
+          });
+        } catch {}
+      }
+      return;
+    }
+
+    // Allowed — emit notification
     const displayName = await getDisplayName(userId);
     const attachmentMeta = files ? formatAttachmentMeta(files) : "";
 
-    log(`NOTIFY: user=${displayName} channel=${channelId} text="${text.slice(0, 80)}"`);
+    log(
+      `NOTIFY: user=${displayName} channel=${channelId} text="${text.slice(0, 80)}"`,
+    );
     await mcp.notification({
       method: "notifications/claude/channel",
       params: {
@@ -364,7 +443,7 @@ async function main() {
         },
       },
     });
-    log(`NOTIFY sent successfully`);
+    log("NOTIFY sent successfully");
 
     // Ack reaction
     if (access.delivery.ackReaction && app) {
@@ -374,9 +453,7 @@ async function main() {
           timestamp: messageTs,
           name: access.delivery.ackReaction,
         });
-      } catch {
-        // Reaction may already exist or be invalid
-      }
+      } catch {}
     }
   }
 
@@ -384,12 +461,10 @@ async function main() {
     // DMs
     app.event("message", async ({ event }) => {
       const msg = event as any;
-      // Ignore bot messages, message_changed, etc.
       if (msg.subtype) return;
       if (msg.bot_id) return;
       if (!msg.user) return;
 
-      // Determine if DM
       const isDm = msg.channel_type === "im";
 
       const files: SlackFile[] = (msg.files || []).map((f: any) => ({
@@ -514,7 +589,7 @@ async function main() {
             ? i === 0
               ? thread_ts
               : undefined
-            : thread_ts; // "all" or default
+            : thread_ts;
 
       const result = await app!.client.chat.postMessage({
         channel: channel_id,
@@ -524,7 +599,6 @@ async function main() {
       if (result.ts) timestamps.push(result.ts);
     }
 
-    // Upload files if any
     if (filePaths && filePaths.length > 0) {
       const safeFiles = filePaths.slice(0, 10);
       for (const filePath of safeFiles) {
@@ -532,7 +606,6 @@ async function main() {
         const fileContent = await readFile(filePath);
         const fileName = filePath.split("/").pop() || "file";
 
-        // Check size (20MB max)
         const fileStat = await stat(filePath);
         if (fileStat.size > 20 * 1024 * 1024) {
           throw new Error(`File too large (max 20MB): ${filePath}`);
@@ -634,7 +707,6 @@ async function main() {
       throw new Error(`File not found or no download URL: ${file_id}`);
     }
 
-    // Sanitize filename
     const rawName = file.name || file_id;
     const safeName = rawName.replace(/[^a-zA-Z0-9._-]/g, "_");
 
@@ -642,7 +714,6 @@ async function main() {
     await mkdir(inboxDir, { recursive: true });
     const localPath = join(inboxDir, safeName);
 
-    // Download using bot token auth
     const resp = await fetch(file.url_private, {
       headers: { Authorization: `Bearer ${env.botToken}` },
     });
@@ -692,8 +763,6 @@ async function main() {
   async function toolSearchMessages(args: any) {
     const { query, count } = args;
 
-    // search.messages requires a user token, not bot token
-    // Check for user token in env
     let userToken: string | undefined;
     try {
       const raw = await readFile(ENV_FILE, "utf-8");
@@ -744,9 +813,7 @@ async function main() {
             text: `${displayName}, you've been approved! I can now receive your messages. Go ahead and send me something.`,
           });
         }
-      } catch {
-        // Polling errors are non-fatal
-      }
+      } catch {}
     }, 3000);
   }
 
