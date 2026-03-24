@@ -63,11 +63,9 @@ const stderrLogger = {
 
 // ── Instructions ─────────────────────────────────────────────────────
 
-const INSTRUCTIONS = `Messages from Slack arrive as <channel source="slack" user_id="U..." user_name="..." channel_id="C..." thread_ts="..." pending_ts="...">.
+const INSTRUCTIONS = `Messages from Slack arrive as <channel source="slack" user_id="U..." user_name="..." channel_id="C..." thread_ts="...">.
 
-IMPORTANT WORKFLOW — every inbound message has a pending placeholder (the "thinking" message). You MUST:
-1. Use edit_message with channel_id and pending_ts to replace the placeholder with your actual reply. This gives the user instant feedback that you're working.
-2. If your reply is long, edit the placeholder first with a short summary, then use reply for additional detail in the thread.
+WORKFLOW — when a message arrives, reply using the reply tool with the channel_id. Do NOT use threads (omit thread_ts) unless the user explicitly asks for a threaded reply.
 
 If the message arrived in a thread, prior thread messages are included in the notification for context.
 
@@ -490,7 +488,7 @@ async function main() {
       return;
     }
 
-    // ── Feature: Status reactions — add 👀 on receipt ──────────────
+    // ── Feature: Status reaction — acknowledge receipt ─────────────
     if (app) {
       try {
         await app.client.reactions.add({
@@ -498,19 +496,6 @@ async function main() {
           timestamp: messageTs,
           name: "eyes",
         });
-      } catch {}
-    }
-
-    // ── Feature: Typing indicator — post placeholder ───────────────
-    let pendingTs: string | undefined;
-    if (app) {
-      try {
-        const pending = await app.client.chat.postMessage({
-          channel: channelId,
-          thread_ts: threadTs || messageTs,
-          text: "_Thinking..._",
-        });
-        pendingTs = pending.ts || undefined;
       } catch {}
     }
 
@@ -534,9 +519,6 @@ async function main() {
       channel_id: channelId,
       thread_ts: threadTs || messageTs,
     };
-    if (pendingTs) {
-      meta.pending_ts = pendingTs;
-    }
 
     await mcp.notification({
       method: "notifications/claude/channel",
@@ -547,21 +529,6 @@ async function main() {
     });
     log("NOTIFY sent successfully");
 
-    // ── Feature: Status reactions — swap 👀 for ⏳ ─────────────────
-    if (app) {
-      try {
-        await app.client.reactions.remove({
-          channel: channelId,
-          timestamp: messageTs,
-          name: "eyes",
-        });
-        await app.client.reactions.add({
-          channel: channelId,
-          timestamp: messageTs,
-          name: "hourglass_flowing_sand",
-        });
-      } catch {}
-    }
   }
 
   if (app) {
@@ -750,21 +717,6 @@ async function main() {
       timestamp,
       name: emoji,
     });
-
-    // If reacting with completion emoji, remove hourglass
-    if (
-      emoji === "white_check_mark" ||
-      emoji === "heavy_check_mark" ||
-      emoji === "done"
-    ) {
-      try {
-        await app!.client.reactions.remove({
-          channel: channel_id,
-          timestamp,
-          name: "hourglass_flowing_sand",
-        });
-      } catch {}
-    }
 
     return {
       content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
