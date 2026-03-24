@@ -63,9 +63,9 @@ const stderrLogger = {
 
 // ── Instructions ─────────────────────────────────────────────────────
 
-const INSTRUCTIONS = `Messages from Slack arrive as <channel source="slack" user_id="U..." user_name="..." channel_id="C..." thread_ts="...">.
+const INSTRUCTIONS = `Messages from Slack arrive as <channel source="slack" user_id="U..." user_name="..." channel_id="C..." message_ts="..." thread_ts="...">.
 
-WORKFLOW — when a message arrives, reply using the reply tool with the channel_id. Do NOT use threads (omit thread_ts) unless the user explicitly asks for a threaded reply.
+WORKFLOW — reply using the reply tool with channel_id. By default, reply in the channel (omit thread_ts). Only pass thread_ts if the notification includes one — that means the message came from a thread, so reply there.
 
 If the message arrived in a thread, prior thread messages are included in the notification for context.
 
@@ -77,7 +77,7 @@ When you read or write a file as part of your work, use share_snippet to post a 
 
 Attachments on inbound messages are NOT auto-downloaded. If a message includes attachments, their metadata (file_id, name, size) appears in the notification. Call download_attachment explicitly if you need the file contents.
 
-When you finish your work, react to the original message (using thread_ts as the timestamp) with "white_check_mark" to signal completion.
+When you finish your work, react to the original message (using message_ts as the timestamp) with "white_check_mark" to signal completion.
 
 If someone sends "status", reply with what you're currently working on, your working directory, and a brief summary of recent activity.
 
@@ -513,12 +513,17 @@ async function main() {
       `NOTIFY: user=${displayName} channel=${channelId} text="${text.slice(0, 80)}"`,
     );
 
+    const isInThread = threadTs !== messageTs;
     const meta: Record<string, string> = {
       user_id: userId,
       user_name: displayName,
       channel_id: channelId,
-      thread_ts: threadTs || messageTs,
+      message_ts: messageTs,
     };
+    // Only include thread_ts when the message is actually in a thread
+    if (isInThread) {
+      meta.thread_ts = threadTs;
+    }
 
     await mcp.notification({
       method: "notifications/claude/channel",
