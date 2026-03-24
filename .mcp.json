@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "slack": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/run.sh",
+      "command": "./run.sh",
       "args": []
     }
   }
