@@ -304,7 +304,7 @@ async function main() {
   // ── MCP Server ───────────────────────────────────────────────────
 
   const mcp = new Server(
-    { name: "villager", version: "0.0.2" },
+    { name: "slack", version: "0.1.0" },
     {
       capabilities: {
         experimental: {
@@ -329,6 +329,9 @@ async function main() {
       logger: stderrLogger as any,
     });
   }
+
+  // Bot user ID — looked up on start to dedupe @mention + message.* events
+  let botUserId: string | null = null;
 
   // Display name cache
   const nameCache = new Map<string, string>();
@@ -537,7 +540,9 @@ async function main() {
   }
 
   if (app) {
-    // DMs
+    // DMs, public-channel, and private-channel messages.
+    // Mentions trigger both `message` and `app_mention` — we skip mentions here
+    // and let the app_mention handler own them to avoid double-processing.
     app.event("message", async ({ event }) => {
       const msg = event as any;
       if (msg.subtype) return;
@@ -545,6 +550,9 @@ async function main() {
       if (!msg.user) return;
 
       const isDm = msg.channel_type === "im";
+
+      // Skip if this is an @mention of the bot in a non-DM — app_mention handles it.
+      if (!isDm && botUserId && msg.text?.includes(`<@${botUserId}>`)) return;
 
       const files: SlackFile[] = (msg.files || []).map((f: any) => ({
         id: f.id,
@@ -565,7 +573,7 @@ async function main() {
       );
     });
 
-    // @mentions in channels
+    // @mentions in channels — owns the mention path for public/private channels.
     app.event("app_mention", async ({ event }) => {
       const msg = event as any;
       if (msg.bot_id) return;
@@ -944,6 +952,14 @@ async function main() {
   if (app) {
     await app.start();
     log("Slack Bolt connected via Socket Mode");
+
+    try {
+      const auth = await app.client.auth.test();
+      botUserId = (auth.user_id as string) || null;
+      log(`Bot user_id: ${botUserId}`);
+    } catch (err) {
+      log("Failed to resolve bot user_id — mention dedup may misfire:", err);
+    }
   }
 }
 

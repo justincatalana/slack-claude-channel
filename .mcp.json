@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "villager": {
-      "command": "/home/justin/repos/slack-claude-channel/run.sh",
+    "slack": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/run.sh",
       "args": []
     }
   }

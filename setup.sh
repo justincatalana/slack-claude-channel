@@ -144,7 +144,7 @@ echo
 say "Done! Next steps:"
 echo
 echo "  1. Start Claude with the Slack channel:"
-dim "     claude --plugin-dir $SCRIPT_DIR --dangerously-load-development-channels server:slack"
+dim "     claude --plugin-dir $SCRIPT_DIR"
 echo
 echo "  2. DM your bot in Slack to get a pairing code"
 echo

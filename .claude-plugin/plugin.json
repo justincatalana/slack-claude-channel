@@ -1,7 +1,7 @@
 {
-  "name": "villager",
-  "description": "Slack channel for Claude Code — receive DMs and @mentions, reply in channels. Manage access via /villager:access.",
+  "name": "slack",
+  "description": "Slack channel for Claude Code. Receive DMs, @mentions, and private-channel messages; reply in threads or channels.",
   "author": { "name": "Justin" },
-  "version": "0.0.2",
-  "keywords": ["slack", "channel", "messaging", "villager"]
+  "version": "0.1.0",
+  "keywords": ["slack", "channel", "messaging"]
 }

@@ -23,6 +23,8 @@
         "chat:write",
         "files:read",
         "files:write",
+        "groups:history",
+        "groups:read",
         "im:history",
         "im:write",
         "reactions:write",
@@ -34,6 +36,8 @@
     "event_subscriptions": {
       "bot_events": [
         "app_mention",
+        "message.channels",
+        "message.groups",
         "message.im"
       ]
     },
